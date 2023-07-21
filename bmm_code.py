@@ -31,6 +31,10 @@ def main(args):
     gwas_ss_df_features = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
 
 
+    # Note that this model fit is done for every chromosome, not each chromosome separately
+    print("Calculating Bayesian Gaussian Mixture parameters now...\n")
+
+
     # Define BGM model and fit
     estim = BayesianGaussianMixture(weight_concentration_prior_type="dirichlet_distribution",
         n_components=2,
@@ -54,8 +58,6 @@ def main(args):
     # Use matplotlib (and sklearn - 'plot_ellipses' from here: https://scikit-learn.org/stable/auto_examples/mixture/plot_concentration_prior.html)
 
 
-    print("Calculating Bayesian Gaussian Mixture parameters now...\n")
-
     # Get the probabilities of each sample in each distribution and add as new columns to the original DF
     proba_mix = estim.predict_proba(gwas_ss_df_features)
     proba_df = pd.DataFrame(proba_mix, columns=['prob_comp1', 'prob_comp2'])
@@ -71,18 +73,37 @@ def main(args):
     # Need to do on a per-chromosome basis
     # Then for every position, compute the Bayes factor of before and after that position values
 
-    unique_chr = gwas_ss_df['CHR'].unique()
+    if(args.chr == -1):
+        # Do all chromosomes
+        unique_chr = gwas_ss_df['CHR'].unique()
 
-    for chr_num in unique_chr:
+        for chr_num in unique_chr:
+            print(f"\tComputing values for chromosome {chr_num}...")
+            BF_calcs = compute_BF_for_chr(gwas_ss_df, chr_num, args.window)
+
+            #STUB/TODO: not complete for all chromosomes yet - need to concat all the chromosomes' BF_calcs into one DF
+
+    else:
+        # Do selected chromosome
+        chr_num = args.chr
         print(f"\tComputing values for chromosome {chr_num}...")
-        gwas_ss_df_chr = gwas_ss_df[gwas_ss_df['CHR'] == chr_num]
+        BF_calcs = compute_BF_for_chr(gwas_ss_df, chr_num, args.window)
 
-        # Turn the position into the index (for faster conditional logic)
-        gwas_ss_df_chr = gwas_ss_df_chr.set_index('POS')
 
-        BF_calcs = roll_upper_low_BF(gwas_ss_df_chr, args.window)
+    ipdb.set_trace()
 
-        ipdb.set_trace()
+    
+
+# Chromosome-specific computation function
+def compute_BF_for_chr(df,chr_num,window):
+    df_select = df[df['CHR'] == chr_num]
+
+    # Turn the position into the index (for faster conditional logic)
+    df_select = df_select.set_index('POS')
+
+    BF_calcs = roll_upper_low_BF(df_select, window)
+
+    return BF_calcs
 
 
 # Based on responses from and modified for our purposes
@@ -90,12 +111,37 @@ def main(args):
 def roll_upper_low_BF(df,window):
     # Get all positions within a window of an actual variant
     # (all unique positions like this to loop over instead of every position as it is currently)
+    print("\t\tGetting relevant indices...")
     index_inds = get_relevant_indices(df.index, window=window)
 
+    curr_high_indexer = df.index.slice_indexer(0,0,1)
+    curr_low_indexer = df.index.slice_indexer(0,0,1)
+    curr_BF = 0
+
     def applyToWindow_calcBFRatio(val):
-        # Get indices associated with window above and window below (the position itself is included in the upper window)
+        # Get indices associated with window above and window below (the position itself is included in the higher window)
         high_indexer = df.index.slice_indexer(val,val+window,1)
         low_indexer = df.index.slice_indexer(val-window-1,val-1,1)
+
+        # Check if either side is empty - if so, then the value is meaningless (no ratio to create)
+        if((low_indexer.stop == low_indexer.start) or (high_indexer.stop == high_indexer.start)):
+            return 0
+
+
+        # Define as nonlocal to be able to access the outer-scope variables
+        # Otherwise Python will assume these are local variables inside this function scope
+        nonlocal curr_high_indexer
+        nonlocal curr_low_indexer
+        nonlocal curr_BF
+
+        # Check if the last set of indexers is the same as this one (common when variants are in isolation)
+        # if so, then no need to recompute - just return the last BF again
+        if((high_indexer == curr_high_indexer) & (low_indexer == curr_low_indexer)):
+            return curr_BF
+        else:
+            curr_high_indexer = high_indexer
+            curr_low_indexer = low_indexer
+
 
         # Get ratio of the product of prob_comp1 of upper to product of prob_comp1 of lower
         # We want to scale by the number of variants, so we take the nth root
@@ -105,8 +151,13 @@ def roll_upper_low_BF(df,window):
 
         bayes_factor_log = high_logprob - low_logprob
 
+        # Update existing BF value for check above
+        curr_BF = bayes_factor_log
+
         return bayes_factor_log
 
+
+    print(f"\t\tComputing Bayes factors for {len(index_inds)} positions...")
     rolled = index_inds.progress_apply(applyToWindow_calcBFRatio)
     return rolled
 
@@ -114,14 +165,49 @@ def roll_upper_low_BF(df,window):
 
 # Function to only get positions that will actually be relevant when indexing for the Bayes factor (within one window of any position)
 def get_relevant_indices(all_ind,window):
-    index_set = set()
 
-    for ind in tqdm(all_ind):
-        index_set.update(set(np.arange(ind-window-1, ind+window+1)))
+    # Using a max approach (aka basic math) since every position should be in ascending sequence anyways
+    # Basically, get the max of the current list and then use a max comparison of that and the lower bound for arange
+    # This allows us to preallocate a list of a size and then concatenate all the resulting np arrays together at the end
+    arr_list = [None] * len(all_ind)
 
-    index_set_list = list(index_set)
+    curr_max = 0
+
+    for l_ind,ind in enumerate(tqdm(all_ind)):
+        lb = max(curr_max+1, ind-window-1)
+        ub = ind+window+1
+        arr_list[l_ind] = np.arange(lb, ub)
+        curr_max = ub-1
+
+    index_set_list = np.concatenate(arr_list).tolist()
 
     return pd.Series(index_set_list, index=index_set_list)
+
+
+    # Old method that made use of sets - not very efficient
+    # Much slower than the current method of using basic math to realize that computing nonoverlapping sets is easy
+
+    # index_set = set()
+
+    # for ind in tqdm(all_ind):
+    #     index_set.update(set(np.arange(ind-window-1, ind+window+1).tolist()))
+
+    # index_set_list = list(index_set)
+
+    # return pd.Series(index_set_list, index=index_set_list)
+
+
+    # Alternative using np.unique and concatenate
+    # This is generally about 20% of the speed as using sets and 0.01% of the speed of using the current method
+
+    # index_set = np.array([])
+
+    # for ind in tqdm(all_ind):
+    #     index_set = np.unique(np.concatenate((np.arange(ind-window-1, ind+window+1), index_set)))
+
+    # index_set_list = index_set.tolist()
+
+    # return pd.Series(index_set_list, index=index_set_list)
 
 
 
@@ -140,8 +226,15 @@ if __name__ == '__main__':
             help="Input GWAS summary stats")
 
     parser.add_argument("--window", type=int,
-            default=100000,
-            help="Window of positions to calculate the Bayes factor for")
+            default=20000,
+            help="Window of positions to calculate the Bayes factor for."
+            "Generally, it seems that many LD block sizes are around 10-15KB, so we'll exceed that value."
+            "Larger window sizes will require substantially more computation time.")
+
+    parser.add_argument("--chr", type=int,
+            default=-1,
+            help="Chromosome to evaluate in this run."
+            "A value of -1 (which is the default) will run all chromosomes.")
 
 
     # Output arguments
