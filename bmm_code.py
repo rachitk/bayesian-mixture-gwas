@@ -7,6 +7,9 @@ from sklearn.mixture import BayesianGaussianMixture
 import os
 import random
 
+# Plotting
+import matplotlib.pyplot as plt
+
 # Debugging
 import ipdb
 from tqdm import tqdm
@@ -39,14 +42,24 @@ def main(args):
     estim = BayesianGaussianMixture(weight_concentration_prior_type="dirichlet_distribution",
         n_components=2,
         init_params="k-means++",
-        random_state=args.seed)
+        random_state=args.seed,
+        n_init=3,
+        max_iter=100,
+        verbose=args.verbose_fit,
+        verbose_interval=10
+        )
 
     estim.fit(gwas_ss_df_features)
 
 
     # Print the weights of each distribution and their respective means
-    print("Weights")
+    print("\nWeights")
     print(estim.weights_)
+
+    if(estim.weights_[0] >= estim.weights_[1]):
+        majority_comp = 0
+    else:
+        majority_comp = 1
 
     print("\nMeans")
     print(estim.means_)
@@ -58,10 +71,16 @@ def main(args):
     # Use matplotlib (and sklearn - 'plot_ellipses' from here: https://scikit-learn.org/stable/auto_examples/mixture/plot_concentration_prior.html)
 
 
-    # Get the probabilities of each sample in each distribution and add as new columns to the original DF
-    proba_mix = estim.predict_proba(gwas_ss_df_features)
-    proba_df = pd.DataFrame(proba_mix, columns=['prob_comp1', 'prob_comp2'])
-    proba_df['prob_comp1_log'] = np.log(proba_df['prob_comp1'])
+    # Use built-in (hidden) sklearn function to avoid imprecision issues
+    # Note that this log is the NATURAL LOG, not LOG10. 
+    # The overall final scaling of Bayesian factors is only minorly different (base e) 
+    # and can be easily changed using a change of bases if needed.
+    _, proba_mix = estim._estimate_log_prob_resp(gwas_ss_df_features)
+
+    if(majority_comp == 1):
+        proba_df = pd.DataFrame(proba_mix, columns=['minor_comp', 'major_comp'])
+    else:
+        proba_df = pd.DataFrame(proba_mix, columns=['major_comp', 'minor_comp'])
 
     gwas_ss_df = gwas_ss_df.join(proba_df)
 
@@ -77,17 +96,53 @@ def main(args):
         # Do all chromosomes
         unique_chr = gwas_ss_df['CHR'].unique()
 
-        for chr_num in unique_chr:
-            print(f"\tComputing values for chromosome {chr_num}...")
-            BF_calcs = compute_BF_for_chr(gwas_ss_df, chr_num, args.window)
-
-            #STUB/TODO: not complete for all chromosomes yet - need to concat all the chromosomes' BF_calcs into one DF
-
     else:
         # Do selected chromosome
-        chr_num = args.chr
+        unique_chr = [args.chr]
+
+
+    for chr_num in unique_chr:
         print(f"\tComputing values for chromosome {chr_num}...")
-        BF_calcs = compute_BF_for_chr(gwas_ss_df, chr_num, args.window)
+        chr_select_df = gwas_ss_df[gwas_ss_df['CHR'] == chr_num]
+
+        BF_calcs = compute_BF_for_chr(chr_select_df, args.window)
+
+        # Fill in the missing positions with zeroes to prevent strange line-jumps
+        BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
+
+        #STUB/TODO: not complete for all chromosomes yet
+
+        # Plot the data
+        print(f"\tPlotting positional ratios for chromosome {chr_num}...")
+        BF_calcs.plot(color='b')
+
+
+        # Add highlighting based on three things:
+        # GWAS significant SNPs
+        # Upper 95th percentile + lower 95th percentile (or maybe 5th + 95th percentiles)
+        sig_snps = chr_select_df[chr_select_df['P'] <= args.sig_thresh]
+        if(not sig_snps.empty):
+            sig_pos = get_relevant_indices(sig_snps['POS'], window=args.window)
+            plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=BF_calcs.index.isin(sig_pos), color='g', alpha=0.15)
+        else:
+            print(f"\t\tNo significant variants found on chromosome {chr_num} with a cutoff of {args.sig_thresh}...")
+
+
+        # Mark regions with ratios within the interval indicated by user
+        int_low = (1. - args.ratio_cutoff)/2.
+        int_high = 1 - int_low
+        low_perc, high_perc = BF_calcs.quantile([int_low, int_high])
+
+
+        # Perform highlights using fill_between and fill_betweenx
+        # fill_between for the ratios and fill_betweenx for the significant windows
+
+        # plt.fill_between(BF_calcs.index, y1=low_perc, y2=BF_calcs.min(), color='r', alpha=0.2)
+        # plt.fill_between(BF_calcs.index, y1=high_perc, y2=BF_calcs.max(), color='r', alpha=0.2)
+
+        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.15)
+        
+        plt.show()
 
 
     ipdb.set_trace()
@@ -95,13 +150,11 @@ def main(args):
     
 
 # Chromosome-specific computation function
-def compute_BF_for_chr(df,chr_num,window):
-    df_select = df[df['CHR'] == chr_num]
-
+def compute_BF_for_chr(df,window):
     # Turn the position into the index (for faster conditional logic)
-    df_select = df_select.set_index('POS')
+    df = df.set_index('POS')
 
-    BF_calcs = roll_upper_low_BF(df_select, window)
+    BF_calcs = roll_upper_low_BF(df, window)
 
     return BF_calcs
 
@@ -143,13 +196,13 @@ def roll_upper_low_BF(df,window):
             curr_low_indexer = low_indexer
 
 
-        # Get ratio of the product of prob_comp1 of upper to product of prob_comp1 of lower
+        # Get ratio of the product of major_comp of upper to product of major_comp of lower
         # We want to scale by the number of variants, so we take the nth root
         # Note that in log scale, this is equivalent to taking the average of the log probabilities and then subtracting
-        high_logprob = df[high_indexer]['prob_comp1_log'].mean()
-        low_logprob = df[low_indexer]['prob_comp1_log'].mean()
+        high_logprob = df[high_indexer]['major_comp'].mean()
+        low_logprob = df[low_indexer]['major_comp'].mean()
 
-        bayes_factor_log = high_logprob - low_logprob
+        bayes_factor_log = low_logprob - high_logprob
 
         # Update existing BF value for check above
         curr_BF = bayes_factor_log
@@ -164,7 +217,7 @@ def roll_upper_low_BF(df,window):
 
 
 # Function to only get positions that will actually be relevant when indexing for the Bayes factor (within one window of any position)
-def get_relevant_indices(all_ind,window):
+def get_relevant_indices(all_ind,window, keep_between=True):
 
     # Using a max approach (aka basic math) since every position should be in ascending sequence anyways
     # Basically, get the max of the current list and then use a max comparison of that and the lower bound for arange
@@ -176,7 +229,10 @@ def get_relevant_indices(all_ind,window):
     for l_ind,ind in enumerate(tqdm(all_ind)):
         lb = max(curr_max+1, ind-window-1)
         ub = ind+window+1
-        arr_list[l_ind] = np.arange(lb, ub)
+        if(keep_between):
+            arr_list[l_ind] = np.arange(lb, ub)
+        else:
+            arr_list[l_ind] = np.array([lb, ub])
         curr_max = ub-1
 
     index_set_list = np.concatenate(arr_list).tolist()
@@ -226,15 +282,27 @@ if __name__ == '__main__':
             help="Input GWAS summary stats")
 
     parser.add_argument("--window", type=int,
-            default=20000,
+            default=100000,
             help="Window of positions to calculate the Bayes factor for."
-            "Generally, it seems that many LD block sizes are around 10-15KB, so we'll exceed that value."
+            "We use a value of 20kb because generally this works well. "
+            "Note, smaller LD blocks (especially adjacent ones) may require smaller windows and larger ones may."
             "Larger window sizes will require substantially more computation time.")
 
     parser.add_argument("--chr", type=int,
             default=-1,
             help="Chromosome to evaluate in this run."
             "A value of -1 (which is the default) will run all chromosomes.")
+
+    parser.add_argument("--sig-thresh", type=float,
+            default=5e-8,
+            help="Significance threshold (p-value) to use on GWAS SNPs (for highlighting the plot). "
+            "Note this will highlight windows that include significant variants below this threshold.")
+
+    parser.add_argument("--ratio-cutoff", type=float,
+            default=0.95,
+            help="The percentile interval that ratios need to fall outside of to be highlighted. "
+            "Example: 0.95 means that only the ratios outside of [0.025, 0.975] will be highlighted. "
+            "Note this will highlight positions where the ratio is outside of this interval.")
 
 
     # Output arguments
@@ -250,6 +318,9 @@ if __name__ == '__main__':
             help="Enable the TQDM progress bar. "
             "Note that TQDM does add some overhead, so disabling it is better on headless cluster systems. "
             "But this can be enabled for debugging/monitoring progress.")
+
+    parser.add_argument("--verbose-fit", action='store_true', 
+            help="Enables verbosity on the Bayesian Gaussian mixture fitting process.")
 
     parser.add_argument("--seed", type=int,
             default=9,
