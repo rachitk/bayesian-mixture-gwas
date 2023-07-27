@@ -8,6 +8,8 @@ import os
 import random
 
 # Plotting
+import matplotlib as mpl
+import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 
 # Debugging
@@ -39,15 +41,13 @@ def main(args):
     gwas_ss_df_features = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
 
 
-    # TODO: Add scatter plot of BETA and P as xy to show "clusters"
-
 
     # Note that this model fit is done for every chromosome, not each chromosome separately
     print("Calculating Bayesian Gaussian Mixture parameters now...\n")
 
 
     # Define BGM model and fit
-    estim = BayesianGaussianMixture(weight_concentration_prior_type="dirichlet_distribution",
+    estim = BayesianGaussianMixture(weight_concentration_prior_type="dirichlet_process",
         n_components=2,
         init_params="k-means++",
         random_state=args.seed,
@@ -77,8 +77,8 @@ def main(args):
     print("(Column 1 is BETA, Column 2 is P)\n")
 
 
-    # TODO: Plot the components and their distributions on top of the 2D plot of the P and BETA values
-    # Use matplotlib (and sklearn - 'plot_ellipses' from here: https://scikit-learn.org/stable/auto_examples/mixture/plot_concentration_prior.html)
+    # Create scatter plot of BETA and P as xy to show "clusters"
+    scatter_ax = plot_BMM_results(estim, gwas_ss_df['BETA'].abs().to_numpy(), gwas_ss_df['P'].abs().to_numpy(), save_loc=args.out_dir)
 
 
     # Use built-in (hidden) sklearn function to avoid imprecision issues
@@ -126,9 +126,47 @@ def main(args):
 
     ipdb.set_trace()
 
-    
 
-# Plotting function
+
+# Plotting functions for BMM fit
+# Taken from https://scikit-learn.org/stable/auto_examples/mixture/plot_concentration_prior.html
+def plot_ellipses(ax, weights, means, covars):
+    for n in range(means.shape[0]):
+        eig_vals, eig_vecs = np.linalg.eigh(covars[n])
+        unit_eig_vec = eig_vecs[0] / np.linalg.norm(eig_vecs[0])
+        angle = np.arctan2(unit_eig_vec[1], unit_eig_vec[0])
+        # Ellipse needs degrees
+        angle = 180 * angle / np.pi
+        # eigenvector normalization
+        eig_vals = 2 * np.sqrt(2) * np.sqrt(eig_vals)
+        ell = mpl.patches.Ellipse(
+            means[n], eig_vals[0], eig_vals[1], angle=180 + angle, edgecolor="black"
+        )
+        ell.set_clip_box(ax.bbox)
+        ell.set_alpha(weights[n])
+        ell.set_facecolor("#56B4E9")
+        ax.add_artist(ell)
+
+# Plotting functions for BMM fit
+# Taken from https://scikit-learn.org/stable/auto_examples/mixture/plot_concentration_prior.html
+def plot_BMM_results(estimator, data_x, data_y, save_loc=None):
+    plt.scatter(data_x, data_y, s=5, marker="o", alpha=0.8)
+    ax1 = plt.gca()
+    ax1.set_ylim(-0.1, 1.1)
+    ax1.set_xticks(())
+    ax1.set_yticks(())
+    plot_ellipses(ax1, estimator.weights_, estimator.means_, estimator.covariances_)
+
+    ax1.set_xlabel("BETA")
+    ax1.set_ylabel("P")
+
+    if(save_loc is not None):
+        plt.savefig(os.path.join(save_loc, f'fitted_bmm.png'), dpi=600)
+
+    return ax1
+
+
+# Plotting function of ratios
 def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True, save_name=None, save_loc=None, per_sig=False):
     BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
 
