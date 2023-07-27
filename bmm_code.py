@@ -46,7 +46,9 @@ def main(args):
         n_init=3,
         max_iter=100,
         verbose=args.verbose_fit,
-        verbose_interval=10
+        verbose_interval=10,
+        # weight_concentration_prior=1e-9,
+        # mean_precision_prior=1e-9
         )
 
     estim.fit(gwas_ss_df_features)
@@ -102,52 +104,53 @@ def main(args):
 
 
     for chr_num in unique_chr:
-        print(f"\tComputing values for chromosome {chr_num}...")
+        print(f"Computing values for chromosome {chr_num}...")
         chr_select_df = gwas_ss_df[gwas_ss_df['CHR'] == chr_num]
 
         BF_calcs = compute_BF_for_chr(chr_select_df, args.window)
 
-        # Fill in the missing positions with zeroes to prevent strange line-jumps
-        BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
-
-        #STUB/TODO: not complete for all chromosomes yet
-
-        # Plot the data
         print(f"\tPlotting positional ratios for chromosome {chr_num}...")
-        BF_calcs.plot(color='b')
 
-
-        # Add highlighting based on three things:
-        # GWAS significant SNPs
-        # Upper 95th percentile + lower 95th percentile (or maybe 5th + 95th percentiles)
-        sig_snps = chr_select_df[chr_select_df['P'] <= args.sig_thresh]
-        if(not sig_snps.empty):
-            sig_pos = get_relevant_indices(sig_snps['POS'], window=args.window)
-            plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=BF_calcs.index.isin(sig_pos), color='g', alpha=0.15)
-        else:
-            print(f"\t\tNo significant variants found on chromosome {chr_num} with a cutoff of {args.sig_thresh}...")
-
-
-        # Mark regions with ratios within the interval indicated by user
-        int_low = (1. - args.ratio_cutoff)/2.
-        int_high = 1 - int_low
-        low_perc, high_perc = BF_calcs.quantile([int_low, int_high])
-
-
-        # Perform highlights using fill_between and fill_betweenx
-        # fill_between for the ratios and fill_betweenx for the significant windows
-
-        # plt.fill_between(BF_calcs.index, y1=low_perc, y2=BF_calcs.min(), color='r', alpha=0.2)
-        # plt.fill_between(BF_calcs.index, y1=high_perc, y2=BF_calcs.max(), color='r', alpha=0.2)
-
-        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.15)
-        
-        plt.show()
+        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff)
 
 
     ipdb.set_trace()
 
     
+
+# Plotting function
+def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff):
+    BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
+
+    #STUB/TODO: not complete for all chromosomes yet
+    # Plot the data
+    ax = BF_calcs.plot(color='b')
+
+
+    # Add highlighting based on percentile cutoffs and significant SNPs:
+
+    # GWAS significant SNPs
+    sig_snps = data_df[data_df['P'] <= sig_thresh]
+    if(not sig_snps.empty):
+        #sig_pos = get_relevant_indices(sig_snps['POS'], window=args.window)
+        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=BF_calcs.index.isin(sig_snps['POS']), color='g', alpha=0.2)
+    else:
+        print(f"\t\tNo significant variants found with a cutoff of {sig_thresh}...")
+
+
+    # Mark regions with ratios within the interval indicated by user
+    int_low = (1. - args.ratio_cutoff)/2.
+    int_high = 1 - int_low
+    low_perc, high_perc = BF_calcs.quantile([int_low, int_high])
+
+
+    # Perform highlights of nth percentile cutoffs using fill_between
+    plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.1)
+    
+    plt.show()
+
+    return ax
+
 
 # Chromosome-specific computation function
 def compute_BF_for_chr(df,window):
@@ -284,8 +287,8 @@ if __name__ == '__main__':
     parser.add_argument("--window", type=int,
             default=100000,
             help="Window of positions to calculate the Bayes factor for."
-            "We use a value of 20kb because generally this works well. "
-            "Note, smaller LD blocks (especially adjacent ones) may require smaller windows and larger ones may."
+            "We use a value of 100kb because generally this works well. "
+            "Note, smaller loci (especially adjacent ones) may require smaller windows to detect."
             "Larger window sizes will require substantially more computation time.")
 
     parser.add_argument("--chr", type=int,
@@ -299,8 +302,8 @@ if __name__ == '__main__':
             "Note this will highlight windows that include significant variants below this threshold.")
 
     parser.add_argument("--ratio-cutoff", type=float,
-            default=0.95,
-            help="The percentile interval that ratios need to fall outside of to be highlighted. "
+            default=0.99,
+            help="The percentile interval that ratios need to fall outside of to be highlighted. Default is 0.99."
             "Example: 0.95 means that only the ratios outside of [0.025, 0.975] will be highlighted. "
             "Note this will highlight positions where the ratio is outside of this interval.")
 
