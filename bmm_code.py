@@ -37,7 +37,7 @@ def main(args):
         args.pos_col: 'POS'})
 
     gwas_ss_df_features = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
-    
+
 
     # TODO: Add scatter plot of BETA and P as xy to show "clusters"
 
@@ -161,11 +161,16 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
         plt.savefig(os.path.join(save_loc, f'{save_name}.png'), dpi=600)
 
         if(per_sig):
+            print(f"\t\tSaving figures for nonoverlapping windows of significant variants...")
             persig_dir = os.path.join(save_loc, save_name)
             os.makedirs(persig_dir, exist_ok=True)
-            for sig_pos in sig_snps['POS']:
-                plt.xlim([sig_pos-3*window, sig_pos+3*window])
-                plt.savefig(os.path.join(save_loc, save_name, f'pos{sig_pos}.png'), dpi=600)
+
+            sig_regions = get_relevant_indices(sig_snps['POS'], window, keep_between=False)
+            sig_regions = sig_regions.drop_duplicates(keep=False)
+
+            for sig_pos_ind in tqdm(range(0, len(sig_regions), 2)):
+                plt.xlim([sig_regions.iloc[sig_pos_ind]-2*window, sig_regions.iloc[sig_pos_ind+1]+2*window])
+                plt.savefig(os.path.join(save_loc, save_name, f'snp_window_{sig_regions.iloc[sig_pos_ind]}_{sig_regions.iloc[sig_pos_ind+1]}.png'), dpi=600)
 
     if(show_plot):
         plt.show()
@@ -188,7 +193,7 @@ def compute_BF_for_chr(df,window):
 def roll_upper_low_BF(df,window):
     # Get all positions within a window of an actual variant
     # (all unique positions like this to loop over instead of every position as it is currently)
-    print("\t\tGetting relevant indices...")
+    print("\tGetting relevant indices...")
     index_inds = get_relevant_indices(df.index, window=window)
 
     curr_high_indexer = df.index.slice_indexer(0,0,1)
@@ -234,7 +239,7 @@ def roll_upper_low_BF(df,window):
         return bayes_factor_log
 
 
-    print(f"\t\tComputing Bayes factors for {len(index_inds)} positions...")
+    print(f"\tComputing ratios for {len(index_inds)} positions...")
     rolled = index_inds.progress_apply(applyToWindow_calcBFRatio)
     return rolled
 
