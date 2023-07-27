@@ -28,10 +28,18 @@ def main(args):
     tqdm.__init__ = partialmethod(tqdm.__init__, disable=not args.enable_progress_bar)
 
     # Load DF and remove missing values, then extract out the features (P-values, BETA effect sizes)
-    # TODO: LOG10P instead of p-value?
-    # Note this is a 2D mixture, not a 1D mixture (which is different from the Bayesian project you did)
-    gwas_ss_df = pd.read_csv(args.input, sep='\t').dropna().reset_index(drop=True)
+    # Note this is a 2D mixture, not a 1D mixture (slightly different from expected)
+    gwas_ss_df = pd.read_csv(args.input, sep='\t').dropna(axis=1, how='all').dropna().reset_index(drop=True)
+
+    gwas_ss_df = gwas_ss_df.rename(columns={args.beta_col: 'BETA', 
+        args.p_col: 'P', 
+        args.chr_col: 'CHR', 
+        args.pos_col: 'POS'})
+
     gwas_ss_df_features = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
+    
+
+    # TODO: Add scatter plot of BETA and P as xy to show "clusters"
 
 
     # Note that this model fit is done for every chromosome, not each chromosome separately
@@ -111,7 +119,9 @@ def main(args):
 
         print(f"\tPlotting positional ratios for chromosome {chr_num}...")
 
-        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff)
+        out_loc = os.path.join(args.out_dir)
+
+        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
 
 
     ipdb.set_trace()
@@ -119,7 +129,7 @@ def main(args):
     
 
 # Plotting function
-def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff):
+def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True, save_name=None, save_loc=None, per_sig=False):
     BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
 
     #STUB/TODO: not complete for all chromosomes yet
@@ -147,7 +157,18 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff):
     # Perform highlights of nth percentile cutoffs using fill_between
     plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.1)
     
-    plt.show()
+    if((save_loc is not None) and (save_name is not None)):
+        plt.savefig(os.path.join(save_loc, f'{save_name}.png'), dpi=600)
+
+        if(per_sig):
+            persig_dir = os.path.join(save_loc, save_name)
+            os.makedirs(persig_dir, exist_ok=True)
+            for sig_pos in sig_snps['POS']:
+                plt.xlim([sig_pos-3*window, sig_pos+3*window])
+                plt.savefig(os.path.join(save_loc, save_name, f'pos{sig_pos}.png'), dpi=600)
+
+    if(show_plot):
+        plt.show()
 
     return ax
 
@@ -314,6 +335,11 @@ if __name__ == '__main__':
             default='./results/',
             help="Output directory.")
 
+    parser.add_argument("--out-per-sig", action='store_true', 
+            help="Outputs a windowed plot per significant SNP. "
+            "Note that this is quite slow, but pretty useful if exploring various regions. "
+            "Do note that if there are a lot of significant SNPs, this will take a LONG time. ")
+
 
     # Miscellaneous arguments (plotting, etc.)
 
@@ -328,6 +354,22 @@ if __name__ == '__main__':
     parser.add_argument("--seed", type=int,
             default=9,
             help="Random seed for training and evaluation.")
+
+    parser.add_argument("--beta-col", type=str,
+            default='BETA',
+            help="String for the header of the column with BETA values.")
+
+    parser.add_argument("--p-col", type=str,
+            default='P',
+            help="String for the header of the column with P values.")
+
+    parser.add_argument("--chr-col", type=str,
+            default='CHR',
+            help="String for the header of the column with chromosome values.")
+
+    parser.add_argument("--pos-col", type=str,
+            default='POS',
+            help="String for the header of the column with position values.")
 
 
 
