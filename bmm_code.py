@@ -38,6 +38,8 @@ def main(args):
         args.chr_col: 'CHR', 
         args.pos_col: 'POS'})
 
+    #gwas_ss_df['LOG10P'] = np.log10(gwas_ss_df['P'])
+
     gwas_ss_df_features = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
 
 
@@ -79,6 +81,8 @@ def main(args):
 
     # Create scatter plot of BETA and P as xy to show "clusters"
     scatter_ax = plot_BMM_results(estim, gwas_ss_df['BETA'].abs().to_numpy(), gwas_ss_df['P'].abs().to_numpy(), save_loc=args.out_dir)
+
+    plt.close()
 
 
     # Use built-in (hidden) sklearn function to avoid imprecision issues
@@ -153,8 +157,6 @@ def plot_BMM_results(estimator, data_x, data_y, save_loc=None):
     plt.scatter(data_x, data_y, s=5, marker="o", alpha=0.8)
     ax1 = plt.gca()
     ax1.set_ylim(-0.1, 1.1)
-    ax1.set_xticks(())
-    ax1.set_yticks(())
     plot_ellipses(ax1, estimator.weights_, estimator.means_, estimator.covariances_)
 
     ax1.set_xlabel("BETA")
@@ -170,9 +172,19 @@ def plot_BMM_results(estimator, data_x, data_y, save_loc=None):
 def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True, save_name=None, save_loc=None, per_sig=False):
     BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
 
+    BF_calcs_noinf = BF_calcs.replace([np.inf, -np.inf], np.nan)
+
+    BF_calcs_min = BF_calcs_noinf.min()
+    BF_calcs_max = BF_calcs_noinf.max()
+
+    BF_calcs = BF_calcs.replace([np.inf], BF_calcs_max+1)
+    BF_calcs = BF_calcs.replace([-np.inf], BF_calcs_min-1)
+
     #STUB/TODO: not complete for all chromosomes yet
     # Plot the data
     ax = BF_calcs.plot(color='b')
+
+    plt.axhline(y=0, color='c', linestyle='dotted')
 
 
     # Add highlighting based on percentile cutoffs and significant SNPs:
@@ -187,7 +199,7 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
 
 
     # Mark regions with ratios within the interval indicated by user
-    int_low = (1. - args.ratio_cutoff)/2.
+    int_low = (1. - ratio_cutoff)/2.
     int_high = 1 - int_low
     low_perc, high_perc = BF_calcs.quantile([int_low, int_high])
 
@@ -207,7 +219,7 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
             sig_regions = sig_regions.drop_duplicates(keep=False)
 
             for sig_pos_ind in tqdm(range(0, len(sig_regions), 2)):
-                plt.xlim([sig_regions.iloc[sig_pos_ind]-2*window, sig_regions.iloc[sig_pos_ind+1]+2*window])
+                plt.xlim([sig_regions.iloc[sig_pos_ind]-3*window, sig_regions.iloc[sig_pos_ind+1]+3*window])
                 plt.savefig(os.path.join(save_loc, save_name, f'snp_window_{sig_regions.iloc[sig_pos_ind]}_{sig_regions.iloc[sig_pos_ind+1]}.png'), dpi=600)
 
     if(show_plot):
@@ -269,12 +281,18 @@ def roll_upper_low_BF(df,window):
         high_logprob = df[high_indexer]['major_comp'].mean()
         low_logprob = df[low_indexer]['major_comp'].mean()
 
-        bayes_factor_log = low_logprob - high_logprob
+        high_prob_atleastonesig = 1 - np.exp(high_logprob)
+        low_prob_atleastonesig = 1 - np.exp(low_logprob)
+
+        ratio_logprob = np.log(high_prob_atleastonesig) - np.log(low_prob_atleastonesig)
 
         # Update existing BF value for check above
-        curr_BF = bayes_factor_log
+        # bayes_factor_log = low_logprob - high_logprob
+        # curr_BF = bayes_factor_log
+        # return bayes_factor_log
 
-        return bayes_factor_log
+        curr_BF = ratio_logprob
+        return ratio_logprob
 
 
     print(f"\tComputing ratios for {len(index_inds)} positions...")
@@ -366,7 +384,7 @@ if __name__ == '__main__':
             "Note this will highlight windows that include significant variants below this threshold.")
 
     parser.add_argument("--ratio-cutoff", type=float,
-            default=0.99,
+            default=0.95,
             help="The percentile interval that ratios need to fall outside of to be highlighted. Default is 0.99."
             "Example: 0.95 means that only the ratios outside of [0.025, 0.975] will be highlighted. "
             "Note this will highlight positions where the ratio is outside of this interval.")
