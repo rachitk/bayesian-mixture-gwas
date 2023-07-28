@@ -127,6 +127,7 @@ def main(args):
 
         ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
 
+        plt.close()
 
     ipdb.set_trace()
 
@@ -210,7 +211,7 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
     if((save_loc is not None) and (save_name is not None)):
         plt.savefig(os.path.join(save_loc, f'{save_name}.png'), dpi=600)
 
-        if(per_sig):
+        if(per_sig and not sig_snps.empty):
             print(f"\t\tSaving figures for nonoverlapping windows of significant variants...")
             persig_dir = os.path.join(save_loc, save_name)
             os.makedirs(persig_dir, exist_ok=True)
