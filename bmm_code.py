@@ -39,8 +39,22 @@ def main(args):
         args.pos_col: 'POS'})
 
     #gwas_ss_df['LOG10P'] = np.log10(gwas_ss_df['P'])
+    gwas_ss_df_features_raw = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
 
-    gwas_ss_df_features = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
+
+    if(args.filtered_fit):
+        # Use a filtered subset of the data to fit
+        gwas_ss_df['_is_sig'] = gwas_ss_df['P'] <= args.sig_thresh
+        n_sig = gwas_ss_df['_is_sig'].sum()
+
+        gwas_ss_df_fitdata = gwas_ss_df[gwas_ss_df['_is_sig']]
+        gwas_ss_df_fitdata = pd.concat([gwas_ss_df_fitdata, gwas_ss_df[~gwas_ss_df['_is_sig']].sample(n=n_sig, random_state=args.seed)])
+
+        gwas_ss_df_features_fit = gwas_ss_df_fitdata[['BETA', 'P']].abs().to_numpy()
+
+    else:
+        # Use all the data to fit
+        gwas_ss_df_features_fit = gwas_ss_df_features_raw
 
 
 
@@ -61,19 +75,14 @@ def main(args):
         # mean_precision_prior=1e-9
         )
 
-    estim.fit(gwas_ss_df_features)
+    estim.fit(gwas_ss_df_features_fit)
 
 
-    # Print the weights of each distribution and their respective means
-    print("\nWeights")
+    # Print the weights of each distribution (if using filtered fit, this should be close to 50/50) and their respective means
+    print("\nWeights of components (in the data used to fit)")
     print(estim.weights_)
 
-    if(estim.weights_[0] >= estim.weights_[1]):
-        majority_comp = 0
-    else:
-        majority_comp = 1
-
-    print("\nMeans")
+    print("\nMeans of components in passed data")
     print(estim.means_)
 
     print("(Column 1 is BETA, Column 2 is P)\n")
@@ -89,7 +98,15 @@ def main(args):
     # Note that this log is the NATURAL LOG, not LOG10. 
     # The overall final scaling of Bayesian factors is only minorly different (base e) 
     # and can be easily changed using a change of bases if needed.
-    _, proba_mix = estim._estimate_log_prob_resp(gwas_ss_df_features)
+    _, proba_mix = estim._estimate_log_prob_resp(gwas_ss_df_features_raw)
+
+    # Determine which component represents the majority of the data (significant variants extremely likely to be the minority)
+    # If the mean of the argmax is leq 0.5, then component 0 is the majority class; otherwise component 1 is the majority class
+    if(proba_mix.argmax(axis=1).mean() <= 0.5):
+        majority_comp = 0
+    else:
+        majority_comp = 1
+
 
     if(majority_comp == 1):
         proba_df = pd.DataFrame(proba_mix, columns=['minor_comp', 'major_comp'])
@@ -382,7 +399,13 @@ if __name__ == '__main__':
     parser.add_argument("--sig-thresh", type=float,
             default=5e-8,
             help="Significance threshold (p-value) to use on GWAS SNPs (for highlighting the plot). "
-            "Note this will highlight windows that include significant variants below this threshold.")
+            "Note this will highlight windows that include significant variants below this threshold. "
+            "If --filtered-fit is passed, this will also determine the threshold used to create and downsample the filtered data for BMM fitting.")
+
+    parser.add_argument("--filtered-fit", action='store_true',
+            help="Will filter the data for fitting the BMM."
+            "Specifically, will use --sig-thresh (default 5e-8), filter the data to only include significant variants, "
+            "and then sample an equal number of insignificant variants to include in fitting.")
 
     parser.add_argument("--ratio-cutoff", type=float,
             default=0.95,
