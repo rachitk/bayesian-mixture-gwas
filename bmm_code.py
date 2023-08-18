@@ -31,12 +31,24 @@ def main(args):
 
     # Load DF and remove missing values, then extract out the features (P-values, BETA effect sizes)
     # Note this is a 2D mixture, not a 1D mixture (slightly different from expected)
+    print(f"Reading in data from {args.input}")
     gwas_ss_df = pd.read_csv(args.input, sep='\t').dropna(axis=1, how='all').dropna().reset_index(drop=True)
+    print("\tCompleted reading in data")
+
 
     gwas_ss_df = gwas_ss_df.rename(columns={args.beta_col: 'BETA', 
         args.p_col: 'P', 
         args.chr_col: 'CHR', 
         args.pos_col: 'POS'})
+
+    print("Checking for multiallelic variants (will drop any multiallelic variants)")
+    n_multivar = (gwas_ss_df.groupby(['CHR', 'POS']).size() > 1).sum()
+
+    if(n_multivar > 0):
+        print(f"\tFound {n_multivar} multiallelic variants... Will drop all such variants.\n")
+        gwas_ss_df = gwas_ss_df.drop_duplicates(subset=['CHR', 'POS'], keep=False)
+    else:
+        print(f"\tFound 0 multiallelic variants... Continuing with original data.\n")
 
     #gwas_ss_df['LOG10P'] = np.log10(gwas_ss_df['P'])
     gwas_ss_df_features_raw = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
@@ -83,13 +95,16 @@ def main(args):
     print(estim.weights_)
 
     print("\nMeans of components in passed data")
-    print(estim.means_)
+    print(estim.means_.T)
 
-    print("(Column 1 is BETA, Column 2 is P)\n")
+    print("(Row 1 is BETA, Row 2 is P)")
+    print("(Col 1 is Comp 1, Col 2 is Comp 2)\n")
 
 
     # Create scatter plot of BETA and P as xy to show "clusters"
+    print("Plotting the BMM fit against all of the data...")
     scatter_ax = plot_BMM_results(estim, gwas_ss_df['BETA'].abs().to_numpy(), gwas_ss_df['P'].abs().to_numpy(), save_loc=args.out_dir)
+    print("\t Done plotting the BMM fit\n")
 
     plt.close()
 
@@ -109,8 +124,10 @@ def main(args):
 
 
     if(majority_comp == 1):
+        print("Using component 2 (out of 2) as the 'majority' component.\n")
         proba_df = pd.DataFrame(proba_mix, columns=['minor_comp', 'major_comp'])
     else:
+        print("Using component 1 (out of 2) as the 'majority' component.\n")
         proba_df = pd.DataFrame(proba_mix, columns=['major_comp', 'minor_comp'])
 
     gwas_ss_df = gwas_ss_df.join(proba_df)
@@ -135,14 +152,23 @@ def main(args):
     for chr_num in unique_chr:
         print(f"Computing values for chromosome {chr_num}...")
         chr_select_df = gwas_ss_df[gwas_ss_df['CHR'] == chr_num]
+        out_loc = os.path.join(args.out_dir)
+        csv_save_loc = os.path.join(out_loc, f'chr{chr_num}', 'BF_values.csv')
 
-        BF_calcs = compute_BF_for_chr(chr_select_df, args.window)
+        preexist_file = os.path.isfile(csv_save_loc)
+
+        if(preexist_file and not args.force_recompute):
+            print(f"\tFound {csv_save_loc} and --force-recompute not passed. Will use the preexisting calculations to plot!")
+            BF_calcs = pd.read_csv(csv_save_loc)
+        else:
+            print(f"\tEither {csv_save_loc} not found or --force-recompute was passed. Will recompute BF values...")
+            BF_calcs = compute_BF_for_chr(chr_select_df, args.window, args.ratio_regularization)
 
         print(f"\tPlotting positional ratios for chromosome {chr_num}...")
-
-        out_loc = os.path.join(args.out_dir)
-
         ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
+
+        if((not preexist_file) or (args.force_recompute)):
+            BF_calcs.to_csv(csv_save_loc)
 
         plt.close()
 
@@ -165,19 +191,21 @@ def plot_ellipses(ax, weights, means, covars):
             means[n], eig_vals[0], eig_vals[1], angle=180 + angle, edgecolor="black"
         )
         ell.set_clip_box(ax.bbox)
-        ell.set_alpha(weights[n])
-        ell.set_facecolor("#56B4E9")
+        #ell.set_alpha(weights[n])
+        ell.set_alpha(0.5)
+        #ell.set_facecolor("#56B4E9")
+        ell.set_facecolor("#f4dea6")
         ax.add_artist(ell)
 
 # Plotting functions for BMM fit
 # Taken from https://scikit-learn.org/stable/auto_examples/mixture/plot_concentration_prior.html
 def plot_BMM_results(estimator, data_x, data_y, save_loc=None):
-    plt.scatter(data_x, data_y, s=5, marker="o", alpha=0.8)
+    plt.scatter(data_x, data_y, s=0.1, marker=".", alpha=1, linewidths=0)
     ax1 = plt.gca()
     ax1.set_ylim(-0.1, 1.1)
     plot_ellipses(ax1, estimator.weights_, estimator.means_, estimator.covariances_)
 
-    ax1.set_xlabel("BETA")
+    ax1.set_xlabel("ABS(BETA)")
     ax1.set_ylabel("P")
 
     if(save_loc is not None):
@@ -247,25 +275,31 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
 
 
 # Chromosome-specific computation function
-def compute_BF_for_chr(df,window):
-    # Turn the position into the index (for faster conditional logic)
-    df = df.set_index('POS')
+def compute_BF_for_chr(df,window, reg=1e-8):
+    # Turn the position into the index (for faster logic)
+    df = df.sort_values(by='POS').set_index('POS')
 
-    BF_calcs = roll_upper_low_BF(df, window)
+    BF_calcs = roll_upper_low_BF(df, window, reg)
 
     return BF_calcs
 
 
 # Based on responses from and modified for our purposes
 # https://stackoverflow.com/questions/14300768/pandas-rolling-computation-with-window-based-on-values-instead-of-counts
-def roll_upper_low_BF(df,window):
+def roll_upper_low_BF(df,window, reg=1e-8):
     # Get all positions within a window of an actual variant
     # (all unique positions like this to loop over instead of every position as it is currently)
     print("\tGetting relevant indices...")
     index_inds = get_relevant_indices(df.index, window=window)
 
-    curr_high_indexer = df.index.slice_indexer(0,0,1)
-    curr_low_indexer = df.index.slice_indexer(0,0,1)
+    # Old, deprecated because didn't realize variants might have the same position (multiallelic?). Requires unique indices.
+    curr_high_indexer = df.index.slice_indexer()
+    curr_low_indexer = df.index.slice_indexer()
+
+    # # Option if do care about multiallelics
+    # curr_high_indexes = pd.Index([-1])
+    # curr_low_indexes = pd.Index([-1])
+
     curr_BF = 0
 
     def applyToWindow_calcBFRatio(val):
@@ -276,7 +310,6 @@ def roll_upper_low_BF(df,window):
         # Check if either side is empty - if so, then the value is meaningless (no ratio to create)
         if((low_indexer.stop == low_indexer.start) or (high_indexer.stop == high_indexer.start)):
             return 0
-
 
         # Define as nonlocal to be able to access the outer-scope variables
         # Otherwise Python will assume these are local variables inside this function scope
@@ -292,17 +325,48 @@ def roll_upper_low_BF(df,window):
             curr_high_indexer = high_indexer
             curr_low_indexer = low_indexer
 
+        high_df = df[high_indexer]
+        low_df = df[low_indexer]
 
-        # Get ratio of the product of major_comp of upper to product of major_comp of lower
+
+        # Massive commented block below is old, deprecated because decided not to handle multiallelics. Does not need unique indices in POS.
+
+        # # Get DF of above and below variants within window and their indexes
+        # high_df = df.loc[(val):(val+window)]
+        # low_df = df.loc[(val-window-1):(val-1)]
+
+        # high_indexes = high_df.index
+        # low_indexes = low_df.index
+
+        # # Check if either DF is empty; if so, no ratio to create (and log(1) = 0)
+        # if(high_df.empty or low_df.empty):
+        #     return 0
+
+        # # Access variables out of this scope within outer function
+        # nonlocal curr_high_indexes
+        # nonlocal curr_low_indexes
+        # nonlocal curr_BF
+
+        # # Check if the last set of indexes is the same as this one (common when variants are in isolation)
+        # # if so, then no need to recompute - just return the last BF again
+        # if((high_indexes.equals(curr_high_indexes)) & (low_indexes.equals(curr_low_indexes))):
+        #     return curr_BF
+        # else:
+        #     curr_high_indexes = high_indexes
+        #     curr_low_indexes = low_indexes
+
+
+
+        # Get log ratio of the (1- product of major_comp of upper) to (1- product of major_comp of lower)
         # We want to scale by the number of variants, so we take the nth root
         # Note that in log scale, this is equivalent to taking the average of the log probabilities and then subtracting
-        high_logprob = df[high_indexer]['major_comp'].mean()
-        low_logprob = df[low_indexer]['major_comp'].mean()
+        high_logprob = high_df['major_comp'].mean()
+        low_logprob = low_df['major_comp'].mean()
 
-        high_prob_atleastonesig = 1 - np.exp(high_logprob)
-        low_prob_atleastonesig = 1 - np.exp(low_logprob)
+        high_prob_atleastonesig = (1 - np.exp(high_logprob))
+        low_prob_atleastonesig = (1 - np.exp(low_logprob))
 
-        ratio_logprob = np.log(high_prob_atleastonesig) - np.log(low_prob_atleastonesig)
+        ratio_logprob = np.log( (high_prob_atleastonesig + reg) / (low_prob_atleastonesig + reg) )
 
         # Update existing BF value for check above
         # bayes_factor_log = low_logprob - high_logprob
@@ -413,6 +477,10 @@ if __name__ == '__main__':
             "Example: 0.95 means that only the ratios outside of [0.025, 0.975] will be highlighted. "
             "Note this will highlight positions where the ratio is outside of this interval.")
 
+    parser.add_argument("--ratio-regularization", type=float,
+            default=1e-8,
+            help="A regularization value (default: 1e-8) that is applied to the ratios to avoid log(0) or log(inf).")
+
 
     # Output arguments
 
@@ -435,6 +503,10 @@ if __name__ == '__main__':
 
     parser.add_argument("--verbose-fit", action='store_true', 
             help="Enables verbosity on the Bayesian Gaussian mixture fitting process.")
+
+    parser.add_argument("--force-recompute", action='store_true', 
+            help="Will force a recomputation of the BF calculations if passed."
+            "Otherwise, will look for [out-dir]/[chr]/BF_values.csv and load that instead.")
 
     parser.add_argument("--seed", type=int,
             default=9,
