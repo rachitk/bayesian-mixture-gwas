@@ -152,7 +152,9 @@ def main(args):
     for chr_num in unique_chr:
         print(f"Computing values for chromosome {chr_num}...")
         chr_select_df = gwas_ss_df[gwas_ss_df['CHR'] == chr_num]
+        
         out_loc = os.path.join(args.out_dir)
+        os.makedirs(out_loc, exist_ok=True)
         csv_save_loc = os.path.join(out_loc, f'chr{chr_num}', 'BF_values.csv')
 
         preexist_file = os.path.isfile(csv_save_loc)
