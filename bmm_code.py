@@ -104,7 +104,7 @@ def main(args):
     # Create scatter plot of BETA and P as xy to show "clusters"
     print("Plotting the BMM fit against all of the data...")
     scatter_ax = plot_BMM_results(estim, gwas_ss_df['BETA'].abs().to_numpy(), gwas_ss_df['P'].abs().to_numpy(), save_loc=args.out_dir)
-    print("\t Done plotting the BMM fit\n")
+    print("\t Finished plotting the BMM component fits.\n")
 
     plt.close()
 
@@ -152,27 +152,29 @@ def main(args):
     for chr_num in unique_chr:
         print(f"Computing values for chromosome {chr_num}...")
         chr_select_df = gwas_ss_df[gwas_ss_df['CHR'] == chr_num]
-        
+
         out_loc = os.path.join(args.out_dir)
-        os.makedirs(out_loc, exist_ok=True)
-        csv_save_loc = os.path.join(out_loc, f'chr{chr_num}', 'BF_values.csv')
+        chr_loc = os.path.join(args.out_dir, f'chr{chr_num}')
+        os.makedirs(chr_loc, exist_ok=True)
+        csv_save_loc = os.path.join(chr_loc, f'BF_values_chr{chr_num}.csv')
 
         preexist_file = os.path.isfile(csv_save_loc)
 
         if(preexist_file and not args.force_recompute):
             print(f"\tFound {csv_save_loc} and --force-recompute not passed. Will use the preexisting calculations to plot!")
-            BF_calcs = pd.read_csv(csv_save_loc)
+            # Need to do some strange hackery to read this as a Series and not a DF
+            BF_calcs = pd.read_csv(csv_save_loc, index_col=0, header=None)[1]
         else:
             print(f"\tEither {csv_save_loc} not found or --force-recompute was passed. Will recompute BF values...")
-            BF_calcs = compute_BF_for_chr(chr_select_df, args.window, args.ratio_regularization)
+            BF_calcs = roll_upper_low_BF(chr_select_df, args.window, args.ratio_regularization, args.only_compute_BF_thresh)
 
         print(f"\tPlotting positional ratios for chromosome {chr_num}...")
         ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
 
         if((not preexist_file) or (args.force_recompute)):
-            BF_calcs.to_csv(csv_save_loc)
+            BF_calcs.to_csv(csv_save_loc, header=False)
 
-        plt.close()
+        print(f"Done with chromosome {chr_num}!\n")
 
     ipdb.set_trace()
 
@@ -251,9 +253,10 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
     int_high = 1 - int_low
     low_perc, high_perc = BF_calcs.quantile([int_low, int_high])
 
-
-    # Perform highlights of nth percentile cutoffs using fill_between
-    plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.1)
+    # If both are 0, then this was an empty DF - don't need to draw lines
+    if(not (low_perc == 0 and high_perc == 0)):
+        # Perform highlights of nth percentile cutoffs using fill_between
+        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.1)
     
     if((save_loc is not None) and (save_name is not None)):
         plt.savefig(os.path.join(save_loc, f'{save_name}.png'), dpi=600)
@@ -272,27 +275,33 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
 
     if(show_plot):
         plt.show()
+    else:
+        plt.close()
 
     return ax
 
 
-# Chromosome-specific computation function
-def compute_BF_for_chr(df,window, reg=1e-8):
-    # Turn the position into the index (for faster logic)
-    df = df.sort_values(by='POS').set_index('POS')
-
-    BF_calcs = roll_upper_low_BF(df, window, reg)
-
-    return BF_calcs
-
 
 # Based on responses from and modified for our purposes
 # https://stackoverflow.com/questions/14300768/pandas-rolling-computation-with-window-based-on-values-instead-of-counts
-def roll_upper_low_BF(df,window, reg=1e-8):
+def roll_upper_low_BF(df,window, reg=1e-8, index_pthresh=1):
+    # Turn the position into the index (for faster logic)
+    df = df.sort_values(by='POS').set_index('POS')
+
     # Get all positions within a window of an actual variant
     # (all unique positions like this to loop over instead of every position as it is currently)
+    # User decides whether to only do this around "significant variants" or not
     print("\tGetting relevant indices...")
-    index_inds = get_relevant_indices(df.index, window=window)
+    if(index_pthresh < 1.0):
+        print(f"\t\tWill only compute BF around variants with p-values <= {index_pthresh}")
+        thresh_df = df[df['P'] <= index_pthresh]
+        if(thresh_df.empty):
+            print(f"\t\tNo variants below the threshold {index_pthresh} found! Returning an empty set of ratios...")
+            return pd.Series(data=[np.nan, np.nan], index=[df.index[0]-1, df.index[-1]+1])
+
+        index_inds = get_relevant_indices(df[df['P'] <= index_pthresh].index, window=window, keep_between=True)
+    else:
+        index_inds = get_relevant_indices(df.index, window=window, keep_between=True)
 
     # Old, deprecated because didn't realize variants might have the same position (multiallelic?). Requires unique indices.
     curr_high_indexer = df.index.slice_indexer()
@@ -381,6 +390,7 @@ def roll_upper_low_BF(df,window, reg=1e-8):
 
     print(f"\tComputing ratios for {len(index_inds)} positions...")
     rolled = index_inds.progress_apply(applyToWindow_calcBFRatio)
+
     return rolled
 
 
@@ -483,6 +493,10 @@ if __name__ == '__main__':
             default=1e-8,
             help="A regularization value (default: 1e-8) that is applied to the ratios to avoid log(0) or log(inf).")
 
+    parser.add_argument("--only-compute-BF-thresh", type=float, default=1e-3,
+            help="Compute BF only in windows around variants above the given threshold. "
+            "Note that this can be different from the significance threshold used to fit the BMM. "
+            "Default is a nominal threshold of 1e-3 (0.001)")
 
     # Output arguments
 
@@ -491,9 +505,9 @@ if __name__ == '__main__':
             help="Output directory.")
 
     parser.add_argument("--out-per-sig", action='store_true', 
-            help="Outputs a windowed plot per significant SNP. "
+            help="Outputs a windowed plot per significant SNP (based on --sig-thresh). "
             "Note that this is quite slow, but pretty useful if exploring various regions. "
-            "Do note that if there are a lot of significant SNPs, this will take a LONG time. ")
+            "Do note that if there are a lot of significant SNPs, this may take a long time. ")
 
 
     # Miscellaneous arguments (plotting, etc.)
