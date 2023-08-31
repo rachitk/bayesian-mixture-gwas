@@ -40,6 +40,9 @@ def main(args):
         args.p_col: 'P', 
         args.chr_col: 'CHR', 
         args.pos_col: 'POS'})
+    
+    print("Sorting data by chromosome and position (to improve efficiency)...")
+    gwas_ss_df = gwas_ss_df.sort_values(by=['CHR', 'POS'])
 
     print("Checking for multiallelic variants (will drop any multiallelic variants)")
     n_multivar = (gwas_ss_df.groupby(['CHR', 'POS']).size() > 1).sum()
@@ -56,6 +59,9 @@ def main(args):
 
     if(args.filtered_fit):
         # Use a filtered subset of the data to fit
+        # TODO: Consider filtering so the betas of the sampled insignificant variants
+        # also needs to be smaller than the median/mean of the significant ones
+        # to try to enforce the L-shaped ideal and also prevent skewing
         gwas_ss_df['_is_sig'] = gwas_ss_df['P'] <= args.sig_thresh
         n_sig = gwas_ss_df['_is_sig'].sum()
 
@@ -168,11 +174,11 @@ def main(args):
             print(f"\tEither {csv_save_loc} not found or --force-recompute was passed. Will recompute BF values...")
             BF_calcs = roll_upper_low_BF(chr_select_df, args.window, args.ratio_regularization, args.only_compute_BF_thresh)
 
-        print(f"\tPlotting positional ratios for chromosome {chr_num}...")
-        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
-
         if((not preexist_file) or (args.force_recompute)):
             BF_calcs.to_csv(csv_save_loc, header=False)
+
+        print(f"\tPlotting positional ratios for chromosome {chr_num}...")
+        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
 
         print(f"Done with chromosome {chr_num}!\n")
 
@@ -220,6 +226,8 @@ def plot_BMM_results(estimator, data_x, data_y, save_loc=None):
 
 # Plotting function of ratios
 def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True, save_name=None, save_loc=None, per_sig=False):
+    is_emptydata = BF_calcs.isnull().all()
+
     BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
 
     BF_calcs_noinf = BF_calcs.replace([np.inf, -np.inf], np.nan)
@@ -249,12 +257,14 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
 
 
     # Mark regions with ratios within the interval indicated by user
+    # Only consider nonzero values when computing the quantiles (the zeros are filled in)
     int_low = (1. - ratio_cutoff)/2.
     int_high = 1 - int_low
-    low_perc, high_perc = BF_calcs.quantile([int_low, int_high])
+    BF_calcs_onlynonzero = BF_calcs.replace(0, np.nan)
+    low_perc, high_perc = BF_calcs_onlynonzero.quantile([int_low, int_high])
 
-    # If both are 0, then this was an empty DF - don't need to draw lines
-    if(not (low_perc == 0 and high_perc == 0)):
+    # If this was an empty series - don't need to draw lines
+    if(not (is_emptydata or np.isnan(low_perc) or np.isnan(high_perc))):
         # Perform highlights of nth percentile cutoffs using fill_between
         plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.1)
     
@@ -266,11 +276,12 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
             persig_dir = os.path.join(save_loc, save_name)
             os.makedirs(persig_dir, exist_ok=True)
 
-            sig_regions = get_relevant_indices(sig_snps['POS'], window, keep_between=False)
+            sig_regions = get_relevant_indices(sig_snps['POS'].sort_values(), window, keep_between=False)
+
             sig_regions = sig_regions.drop_duplicates(keep=False)
 
             for sig_pos_ind in tqdm(range(0, len(sig_regions), 2)):
-                plt.xlim([sig_regions.iloc[sig_pos_ind]-3*window, sig_regions.iloc[sig_pos_ind+1]+3*window])
+                plt.xlim([sig_regions.iloc[sig_pos_ind]-5*window, sig_regions.iloc[sig_pos_ind+1]+5*window])
                 plt.savefig(os.path.join(save_loc, save_name, f'snp_window_{sig_regions.iloc[sig_pos_ind]}_{sig_regions.iloc[sig_pos_ind+1]}.png'), dpi=600)
 
     if(show_plot):
@@ -493,10 +504,10 @@ if __name__ == '__main__':
             default=1e-8,
             help="A regularization value (default: 1e-8) that is applied to the ratios to avoid log(0) or log(inf).")
 
-    parser.add_argument("--only-compute-BF-thresh", type=float, default=1e-3,
+    parser.add_argument("--only-compute-BF-thresh", type=float, default=1e-5,
             help="Compute BF only in windows around variants above the given threshold. "
             "Note that this can be different from the significance threshold used to fit the BMM. "
-            "Default is a nominal threshold of 1e-3 (0.001)")
+            "Default is a nominal threshold of 1e-5 (0.00001)")
 
     # Output arguments
 
