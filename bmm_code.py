@@ -172,13 +172,13 @@ def main(args):
             BF_calcs = pd.read_csv(csv_save_loc, index_col=0, header=None)[1]
         else:
             print(f"\tEither {csv_save_loc} not found or --force-recompute was passed. Will recompute BF values...")
-            BF_calcs = roll_upper_low_BF(chr_select_df, args.window, args.ratio_regularization, args.only_compute_BF_thresh)
+            BF_calcs = roll_upper_low_BF(chr_select_df, args.window, args.ratio_regularization, args.ratio_thresh)
 
         if((not preexist_file) or (args.force_recompute)):
             BF_calcs.to_csv(csv_save_loc, header=False)
 
         print(f"\tPlotting positional ratios for chromosome {chr_num}...")
-        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig)
+        ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig, per_rthresh=args.out_per_ratio_thresh)
 
         print(f"Done with chromosome {chr_num}!\n")
 
@@ -225,7 +225,7 @@ def plot_BMM_results(estimator, data_x, data_y, save_loc=None):
 
 
 # Plotting function of ratios
-def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True, save_name=None, save_loc=None, per_sig=False):
+def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_thresh,ratio_cutoff, show_plot=True, save_name=None, save_loc=None, per_sig=False, per_rthresh=False):
     is_emptydata = BF_calcs.isnull().all()
 
     BF_calcs = BF_calcs.reindex(range(BF_calcs.index[0], BF_calcs.index[-1]+1), fill_value=0)
@@ -251,10 +251,17 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
     sig_snps = data_df[data_df['P'] <= sig_thresh]
     if(not sig_snps.empty):
         #sig_pos = get_relevant_indices(sig_snps['POS'], window=args.window)
-        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=BF_calcs.index.isin(sig_snps['POS']), color='g', alpha=0.2)
+        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=BF_calcs.index.isin(sig_snps['POS']), color='g', alpha=0.1)
     else:
         print(f"\t\tNo significant variants found with a cutoff of {sig_thresh}...")
 
+    # Variants that meet the threshold for ratio computation
+    ratio_snps = data_df[data_df['P'] <= ratio_thresh]
+    if(not ratio_snps.empty):
+        #sig_pos = get_relevant_indices(sig_snps['POS'], window=args.window)
+        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=BF_calcs.index.isin(ratio_snps['POS']), color='y', alpha=0.1)
+    else:
+        print(f"\t\tNo other variants found with a cutoff of {ratio_thresh}...")
 
     # Mark regions with ratios within the interval indicated by user
     # Only consider nonzero values when computing the quantiles (the zeros are filled in)
@@ -266,23 +273,39 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_cutoff, show_plot=True,
     # If this was an empty series - don't need to draw lines
     if(not (is_emptydata or np.isnan(low_perc) or np.isnan(high_perc))):
         # Perform highlights of nth percentile cutoffs using fill_between
-        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.1)
+        plt.fill_between(BF_calcs.index, y1=BF_calcs.min(), y2=BF_calcs.max(), where=((BF_calcs <= low_perc) | (BF_calcs >= high_perc)), color='r', alpha=0.05)
     
     if((save_loc is not None) and (save_name is not None)):
         plt.savefig(os.path.join(save_loc, f'{save_name}.png'), dpi=600)
 
+        # TODO: refactor both into a single function since the underlying logic is basically the same
+        # Just need to point to and iterate over a different dataframe
+
+        # Per significant SNP region saving
         if(per_sig and not sig_snps.empty):
-            print(f"\t\tSaving figures for nonoverlapping windows of significant variants...")
-            persig_dir = os.path.join(save_loc, save_name)
+            print(f"\t\tSaving figures for nonoverlapping windows of significant variants (cutoff {sig_thresh})...")
+            persig_dir = os.path.join(save_loc, save_name, 'sigSNPwindows')
             os.makedirs(persig_dir, exist_ok=True)
 
             sig_regions = get_relevant_indices(sig_snps['POS'].sort_values(), window, keep_between=False)
-
             sig_regions = sig_regions.drop_duplicates(keep=False)
 
             for sig_pos_ind in tqdm(range(0, len(sig_regions), 2)):
                 plt.xlim([sig_regions.iloc[sig_pos_ind]-5*window, sig_regions.iloc[sig_pos_ind+1]+5*window])
-                plt.savefig(os.path.join(save_loc, save_name, f'snp_window_{sig_regions.iloc[sig_pos_ind]}_{sig_regions.iloc[sig_pos_ind+1]}.png'), dpi=600)
+                plt.savefig(os.path.join(persig_dir, f'snp_window_{sig_regions.iloc[sig_pos_ind]}_{sig_regions.iloc[sig_pos_ind+1]}.png'), dpi=600)
+
+        # Per ratio SNP region saving
+        if(per_rthresh and not ratio_snps.empty):
+            print(f"\t\tSaving figures for nonoverlapping windows of variants that met the threshold for ratios (cutoff {ratio_thresh})...")
+            perrthresh_dir = os.path.join(save_loc, save_name, 'threshratioSNPwindows')
+            os.makedirs(perrthresh_dir, exist_ok=True)
+
+            ratio_regions = get_relevant_indices(ratio_snps['POS'].sort_values(), window, keep_between=False)
+            ratio_regions = ratio_regions.drop_duplicates(keep=False)
+
+            for ratio_pos_ind in tqdm(range(0, len(ratio_regions), 2)):
+                plt.xlim([ratio_regions.iloc[ratio_pos_ind]-5*window, ratio_regions.iloc[ratio_pos_ind+1]+5*window])
+                plt.savefig(os.path.join(perrthresh_dir, f'snp_window_{ratio_regions.iloc[ratio_pos_ind]}_{ratio_regions.iloc[ratio_pos_ind+1]}.png'), dpi=600)
 
     if(show_plot):
         plt.show()
@@ -495,8 +518,8 @@ if __name__ == '__main__':
             "and then sample an equal number of insignificant variants to include in fitting.")
 
     parser.add_argument("--ratio-cutoff", type=float,
-            default=0.95,
-            help="The percentile interval that ratios need to fall outside of to be highlighted. Default is 0.99."
+            default=0.90,
+            help="The percentile interval that ratios need to fall outside of to be highlighted. Default is 0.90."
             "Example: 0.95 means that only the ratios outside of [0.025, 0.975] will be highlighted. "
             "Note this will highlight positions where the ratio is outside of this interval.")
 
@@ -504,8 +527,8 @@ if __name__ == '__main__':
             default=1e-8,
             help="A regularization value (default: 1e-8) that is applied to the ratios to avoid log(0) or log(inf).")
 
-    parser.add_argument("--only-compute-BF-thresh", type=float, default=1e-5,
-            help="Compute BF only in windows around variants above the given threshold. "
+    parser.add_argument("--ratio-thresh", type=float, default=1e-5,
+            help="Compute ratios only in windows around variants above the given threshold. "
             "Note that this can be different from the significance threshold used to fit the BMM. "
             "Default is a nominal threshold of 1e-5 (0.00001)")
 
@@ -519,6 +542,11 @@ if __name__ == '__main__':
             help="Outputs a windowed plot per significant SNP (based on --sig-thresh). "
             "Note that this is quite slow, but pretty useful if exploring various regions. "
             "Do note that if there are a lot of significant SNPs, this may take a long time. ")
+
+    parser.add_argument("--out-per-ratio-thresh", action='store_true', 
+            help="Outputs a windowed plot per SNP that meets the ratio threshold. "
+            "Note that this is quite slow, but pretty useful if exploring various regions. "
+            "Do note that if there are a lot of such SNPs, this may take a long time. ")
 
 
     # Miscellaneous arguments (plotting, etc.)
