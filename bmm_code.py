@@ -57,7 +57,7 @@ def main(args):
     gwas_ss_df_features_raw = gwas_ss_df[['BETA', 'P']].abs().to_numpy()
 
 
-    if(args.filtered_fit):
+    if(not args.no_filtered_fit):
         # Use a filtered subset of the data to fit
         # TODO: Consider filtering so the betas of the sampled insignificant variants
         # also needs to be smaller than the median/mean of the significant ones
@@ -512,9 +512,9 @@ if __name__ == '__main__':
             "Note this will highlight windows that include significant variants below this threshold. "
             "If --filtered-fit is passed, this will also determine the threshold used to create and downsample the filtered data for BMM fitting.")
 
-    parser.add_argument("--filtered-fit", action='store_true',
-            help="Will filter the data for fitting the BMM."
-            "Specifically, will use --sig-thresh (default 5e-8), filter the data to only include significant variants, "
+    parser.add_argument("--no-filtered-fit", action='store_true',
+            help="Will not filter the data for fitting the BMM."
+            "Specifically,  if this is not passed, will use --sig-thresh (default 5e-8), filter the data to only include significant variants, "
             "and then sample an equal number of insignificant variants to include in fitting.")
 
     parser.add_argument("--ratio-cutoff", type=float,
