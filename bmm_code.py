@@ -147,10 +147,6 @@ def main(args):
     #gwas_ss_df['actual_variant'] = 1
 
 
-    # TODO: Develop sliding/rolling window function based on the position of the variants
-    # Need to do on a per-chromosome basis
-    # Then for every position, compute the Bayes factor of before and after that position values
-
     if(args.chr == -1):
         # Do all chromosomes
         unique_chr = gwas_ss_df['CHR'].unique()
@@ -241,7 +237,6 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_thresh,ratio_cutoff, sh
     BF_calcs = BF_calcs.replace([np.inf], BF_calcs_max+1)
     BF_calcs = BF_calcs.replace([-np.inf], BF_calcs_min-1)
 
-    #STUB/TODO: not complete for all chromosomes yet
     # Plot the data
     ax = BF_calcs.plot(color='b')
 
@@ -319,7 +314,7 @@ def plot_ratios(data_df,BF_calcs,window,sig_thresh,ratio_thresh,ratio_cutoff, sh
 
 
 
-# Based on responses from and modified for our purposes
+# Based on responses from and (heavily) modified for our purposes
 # https://stackoverflow.com/questions/14300768/pandas-rolling-computation-with-window-based-on-values-instead-of-counts
 def roll_upper_low_BF(df,window, reg=1e-8, index_pthresh=1):
     # Turn the position into the index (for faster logic)
@@ -340,13 +335,11 @@ def roll_upper_low_BF(df,window, reg=1e-8, index_pthresh=1):
     else:
         index_inds = get_relevant_indices(df.index, window=window, keep_between=True)
 
-    # Old, deprecated because didn't realize variants might have the same position (multiallelic?). Requires unique indices.
+    # Note that variants might have the same position (multiallelic?) and this fails with those. 
+    # Requires unique indices.
     curr_high_indexer = df.index.slice_indexer()
     curr_low_indexer = df.index.slice_indexer()
 
-    # # Option if do care about multiallelics
-    # curr_high_indexes = pd.Index([-1])
-    # curr_low_indexes = pd.Index([-1])
 
     curr_BF = 0
 
@@ -377,34 +370,6 @@ def roll_upper_low_BF(df,window, reg=1e-8, index_pthresh=1):
         low_df = df[low_indexer]
 
 
-        # Massive commented block below is old, deprecated because decided not to handle multiallelics. Does not need unique indices in POS.
-
-        # # Get DF of above and below variants within window and their indexes
-        # high_df = df.loc[(val):(val+window)]
-        # low_df = df.loc[(val-window-1):(val-1)]
-
-        # high_indexes = high_df.index
-        # low_indexes = low_df.index
-
-        # # Check if either DF is empty; if so, no ratio to create (and log(1) = 0)
-        # if(high_df.empty or low_df.empty):
-        #     return 0
-
-        # # Access variables out of this scope within outer function
-        # nonlocal curr_high_indexes
-        # nonlocal curr_low_indexes
-        # nonlocal curr_BF
-
-        # # Check if the last set of indexes is the same as this one (common when variants are in isolation)
-        # # if so, then no need to recompute - just return the last BF again
-        # if((high_indexes.equals(curr_high_indexes)) & (low_indexes.equals(curr_low_indexes))):
-        #     return curr_BF
-        # else:
-        #     curr_high_indexes = high_indexes
-        #     curr_low_indexes = low_indexes
-
-
-
         # Get log ratio of the (1- product of major_comp of upper) to (1- product of major_comp of lower)
         # We want to scale by the number of variants, so we take the nth root
         # Note that in log scale, this is equivalent to taking the average of the log probabilities and then subtracting
@@ -417,10 +382,6 @@ def roll_upper_low_BF(df,window, reg=1e-8, index_pthresh=1):
         ratio_logprob = np.log( (high_prob_atleastonesig + reg) / (low_prob_atleastonesig + reg) )
 
         # Update existing BF value for check above
-        # bayes_factor_log = low_logprob - high_logprob
-        # curr_BF = bayes_factor_log
-        # return bayes_factor_log
-
         curr_BF = ratio_logprob
         return ratio_logprob
 
@@ -454,32 +415,6 @@ def get_relevant_indices(all_ind,window, keep_between=True):
     index_set_list = np.concatenate(arr_list).tolist()
 
     return pd.Series(index_set_list, index=index_set_list)
-
-
-    # Old method that made use of sets - not very efficient
-    # Much slower than the current method of using basic math to realize that computing nonoverlapping sets is easy
-
-    # index_set = set()
-
-    # for ind in tqdm(all_ind):
-    #     index_set.update(set(np.arange(ind-window-1, ind+window+1).tolist()))
-
-    # index_set_list = list(index_set)
-
-    # return pd.Series(index_set_list, index=index_set_list)
-
-
-    # Alternative using np.unique and concatenate
-    # This is generally about 20% of the speed as using sets and 0.01% of the speed of using the current method
-
-    # index_set = np.array([])
-
-    # for ind in tqdm(all_ind):
-    #     index_set = np.unique(np.concatenate((np.arange(ind-window-1, ind+window+1), index_set)))
-
-    # index_set_list = index_set.tolist()
-
-    # return pd.Series(index_set_list, index=index_set_list)
 
 
 
