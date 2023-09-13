@@ -9,14 +9,18 @@ import random
 
 # Plotting
 import matplotlib as mpl
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 
-# Debugging
-import ipdb
-from tqdm import tqdm
-from functools import partial, partialmethod
+# Progress bar
+try:
+    from tqdm import tqdm
+    tqdm_avail = True
+except ImportError:
+    def tqdm(iterator, *args, **kwargs):
+        return iterator
+    tqdm_avail = False
 
+from functools import partialmethod
 
 
 def main(args):
@@ -25,9 +29,10 @@ def main(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    # Disable TQDM progress bar if user does not explicitly request it
-    tqdm.pandas()
-    tqdm.__init__ = partialmethod(tqdm.__init__, disable=not args.enable_progress_bar)
+    # Disable TQDM progress bar if user does not explicitly request it and is available
+    if(tqdm_avail):
+        tqdm.pandas()
+        tqdm.__init__ = partialmethod(tqdm.__init__, disable=not args.enable_progress_bar)
 
     # Load DF and remove missing values, then extract out the features (P-values, BETA effect sizes)
     # Note this is a 2D mixture, not a 1D mixture (slightly different from expected)
@@ -181,8 +186,6 @@ def main(args):
         ax = plot_ratios(chr_select_df, BF_calcs, args.window, args.sig_thresh, args.ratio_thresh, args.ratio_cutoff, show_plot=False, save_name=f'chr{chr_num}', save_loc=out_loc, per_sig=args.out_per_sig, per_rthresh=args.out_per_ratio_thresh)
 
         print(f"Done with chromosome {chr_num}!\n")
-
-    ipdb.set_trace()
 
 
 
